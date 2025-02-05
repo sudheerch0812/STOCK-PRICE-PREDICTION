@@ -1,0 +1,330 @@
+Module 1: Importing Required Libraries
+ Description: This module imports necessary libraries for data manipulation, modeling, and
+visualization. It includes libraries for hidden Markov models (HMM), neural networks, and
+time series analysis.
+ Key Libraries:
+o hmmlearn: For implementing hidden Markov models.
+o numpy, pandas: For numerical computations and data manipulation.
+o matplotlib.pyplot: For plotting graphs.
+o yfinance: To fetch financial data (not used directly in the code but imported).
+o tensorflow.keras: For building and training neural network models.
+o scikit-learn: For preprocessing data and evaluating model performance.
+from hmmlearn import hmm
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import yfinance as yf
+import math
+import scipy.stats as stats
+import statsmodels.api as sm
+import gdown
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import SimpleRNN, LSTM, Dense
+from sklearn.preprocessing import MinMaxScaler
+from statsmodels.tsa.arima.model import ARIMA
+from sklearn.metrics import mean_squared_error
+Module 2: Data Preparation
+ Description: This module prepares the financial data for analysis. It reads data from a CSV
+file, processes it, and resamples it to a monthly frequency.
+ Key Steps:
+o Read Data: Loads the dataset from a CSV file.
+o Date Conversion: Converts the 'Date' column to a datetime format.
+o Resampling: Resamples the data to a monthly frequency, aggregating relevant
+columns (Open, High, Low, Close).
+o Training Data Setup: Defines the training window and trims the data to the first 162
+months.
+ data_csv = pd.read_csv(r"/content/NIFTY 50.csv")
+data = data_csv[data_csv.columns[0:5]]
+data = data[:5348]
+# Convert 'Date' column to datetime type
+data['Date'] = pd.to_datetime(data['Date'])
+# Set the 'Date' column as the index
+data.set_index('Date', inplace=True)
+# Resample the data to monthly frequency
+obs = data.resample('M').agg({'Open': 'first','High': 'max','Low': '
+min','Close': 'last'})
+# Reset the index to have 'Date' as a column again
+obs = obs.reset_index()
+# Print the monthly data
+print(obs)
+data = obs[:162]
+print(data)
+# Calculate number of rows and set training window
+T = data.shape[0]
+print("T= ", T)
+# Define the size of the training window
+d = 96
+D = 96
+hmm_price = []
+Module 3: Hidden Markov Model (HMM) Prediction
+ Description: Implements a sliding window approach using HMM to predict future closing
+prices based on historical data.
+ Key Steps:
+o Model Initialization: Initializes the HMM model and fits it to the training data.
+o Likelihood Calculation: Calculates the likelihood of the data and predicts future prices
+by analyzing variations in the likelihood.
+o Storing Predictions: Appends the predicted prices to a list for future analysis.
+temp_T = T
+first_time = True
+# Sliding window approach to predict future prices
+while T < temp_T + d:
+ # Train HMM on data from T-D+1 to T
+ train_data = obs.iloc[T-D:T]
+ train_data = train_data.dropna()
+ # Set the random seed
+ np.random.seed(123)
+ if(first_time):
+ first_time = False
+ model = hmm.GaussianHMM(n_components=5)
+ else:
+ old_model= model
+ model = hmm.GaussianHMM(n_components=5, init_params="c")
+ model.startprob_ = old_model.startprob_
+ model.transmat_ = old_model.transmat_
+ model.means_ = old_model.means_
+ model.fit(train_data)
+ # Calculate original likelihood
+ original_likelihood = model.score(train_data)
+ # Loop to find new likelihood
+ t=T
+ min_diff = float('inf')
+ min_t = T
+ min_likelihood = original_likelihood
+ while t-D> 0:
+ t = t-1
+ train_data = obs.iloc[t-D:t]
+ new_likelihood = model.score(train_data)
+ if (abs(new_likelihood - original_likelihood))< min_diff: #
+Threshold for comparison by choosing that new_likelihood which is minimum
+ min_diff = abs(new_likelihood - original_likelihood)
+ min_t = t
+ min_likelihood = new_likelihood
+ # Calculate the predicted close price
+ close_price = obs['Close'][T-1] + ((obs['Close'][min_t + 1] -
+obs['Close'][min_t]) * np.sign(original_likelihood - min_likelihood))
+ hmm_price.append(close_price)
+ T=T+1
+# Print the calculated prices
+print("HMM Prices: ")
+print(hmm_price)
+Module 4: LSTM Model Training and Prediction
+ Description: This module prepares data for LSTM modeling and iteratively predicts future
+closing prices for the next 96 months.
+ Key Steps:
+o Data Scaling: Scales the closing prices to a range of (0, 1) for LSTM training.
+o Data Preparation: Prepares input-output pairs for LSTM training using a time series
+approach.
+o Model Definition and Training: Constructs and trains the LSTM model.
+o Prediction Loop: Iteratively predicts future prices and retrains the model with each
+prediction.
+ # Scaling the data to the range (0, 1)
+scaler = MinMaxScaler(feature_range=(0, 1))
+scaled_data = scaler.fit_transform(obs['Close'].values.reshape(-1, 1
+))
+# Prepare data for LSTM model (using the first D months)
+def prepare_data(data, time_step):
+ X, y = [], []
+ for i in range(len(data) - time_step):
+ X.append(data[i:(i + time_step), 0])
+ y.append(data[i + time_step, 0])
+ return np.array(X), np.array(y)
+time_step = obs.shape[0] - D
+# Initialize an empty list to store the predictions
+lstm_predictions = []
+# Initial training on the first 162 months
+X_train, y_train = prepare_data(scaled_data, D)
+# Reshape input to be [samples, time steps, features] for LSTM
+X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
+# Train the LSTM model
+model_lstm = Sequential()
+model_lstm.add(LSTM(units=50, return_sequences=True, input_shape=(ti
+me_step, 1)))
+model_lstm.add(LSTM(units=50))
+model_lstm.add(Dense(1))
+model_lstm.compile(optimizer='adam', loss='mean_squared_error')
+model_lstm.fit(X_train, y_train, epochs=5, batch_size=32)
+# Iteratively predict the next 96 months and retrain the model
+for i in range(96): # Predict the next 96 months
+ X_input = scaled_data[-time_step:] # Use the last 'time_step' m
+onths for prediction
+ X_input = X_input.reshape(1, time_step, 1)
+ pred = model_lstm.predict(X_input)
+ lstm_predictions.append(pred[0, 0])
+ # Add the predicted data to the training set
+ new_data = np.append(scaled_data[:time_step + i + 1], pred)
+ scaled_data = np.append(scaled_data, pred).reshape(-1, 1)
+ # Re-prepare the training data including the new data
+ X_train, y_train = prepare_data(scaled_data[:time_step + i + 1],
+time_step)
+ X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
+ # Retrain the LSTM model with the updated data
+ model_lstm.fit(X_train, y_train, epochs=5, batch_size=32)
+# Inverse transform the predictions to the original scale
+lstm_predictions = scaler.inverse_transform(np.array(lstm_prediction
+s).reshape(-1, 1))
+# LSTM predictions for the next 96 months
+print(lstm_predictions.shape)
+Module 5: RNN Model Training and Prediction
+ Description: Similar to the LSTM training, this module implements a simple RNN to predict f
+uture prices using the same sliding window method.
+ Key Steps:
+o Data Preparation: Prepares the input-output pairs for RNN training.
+o Model Definition and Training: Constructs and trains the RNN model.
+o Prediction Loop: Iteratively predicts and retrains the model, similar to the LSTM app
+roach.
+# Scaling the data
+scaler = MinMaxScaler(feature_range=(0, 1))
+scaled_data = scaler.fit_transform(obs['Close'].values.reshape(-1, 1))
+# Prepare data function for RNN model
+def prepare_data(data, time_step):
+ X, y = [], []
+ for i in range(len(data) - time_step):
+ X.append(data[i:(i + time_step), 0])
+ y.append(data[i + time_step, 0])
+ return np.array(X), np.array(y)
+time_step = obs.shape[0] - D # D is the training window size
+# Initialize an empty list to store the predictions
+rnn_predictions = []
+# Initial training on the first 162 months
+X_train, y_train = prepare_data(scaled_data, time_step)
+print(X_train.shape)
+X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
+# Train the initial RNN model
+model_rnn = Sequential()
+model_rnn.add(SimpleRNN(units=50, return_sequences=True, input_shape=(ti
+me_step, 1)))
+model_rnn.add(SimpleRNN(units=50))
+model_rnn.add(Dense(1))
+model_rnn.compile(optimizer='adam', loss='mean_squared_error')
+model_rnn.fit(X_train, y_train, epochs=5, batch_size=32)
+# Iteratively predict the next month and retrain the model
+for i in range(96): # Predict the next 96 months iteratively
+ # Predict the next month
+ X_input = scaled_data[-time_step:] # Use the last 'time_step' month
+s for prediction
+ X_input = X_input.reshape(1, time_step, 1)
+ pred = model_rnn.predict(X_input)
+ rnn_predictions.append(pred[0, 0])
+ # Add the real data for the next month to the training set
+ new_data = np.append(scaled_data[:time_step + i + 1], pred)
+ scaled_data = np.append(scaled_data, pred).reshape(-1, 1)
+ # Re-prepare the training data including the new data
+ X_train, y_train = prepare_data(scaled_data[:time_step + i + 1], tim
+e_step)
+ X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
+ # Retrain the RNN model with the updated data
+ model_rnn.fit(X_train, y_train, epochs=5, batch_size=32)
+# Inverse transform the predictions to the original scale
+rnn_predictions = scaler.inverse_transform(np.array(rnn_predictions).res
+hape(-1, 1))
+# rnn_predictions now contains the predicted closing prices for the next
+96 months
+print(rnn_predictions.shape)
+Module 6: Evaluation and Plotting
+ Calculate Performance Metrics
+In this section, four main functions are defined to calculate error metrics (APE, AAE, ARPE,
+RMSE) based on the predicted and actual values of stock prices.
+Absolute Percentage Error (APE)
+APE measures the absolute percentage deviation between the actual and predicted values. It is
+calculated as the absolute difference between actual and predicted values, divided by the mean
+of the actual values.
+# 1. Absolute Percentage Error (APE)
+def ape(real_, pred_):
+ APE = 0
+ sum = 0
+ N = len(real_)
+ # Calculate the sum of absolute differences between real and pre
+dicted values
+ for i in range(1, N):
+ sum += (np.abs(real_[i] - pred_[i])) / N
+ # Calculate APE as a ratio of the sum to the mean of real values
+ APE = sum / (np.mean(real_))
+ return APE
+ape_hmm = ape(close, hmm_price)
+ape_lstm = ape(close, lstm_predictions)
+ape_rnn = ape(close, rnn_predictions)
+Average Absolute Error (AAE)
+AAE is the mean of the absolute errors between predicted and actual values. It’s a straightforw
+ard measure of prediction accuracy.
+# 2. Average Absolute Error (AAE)
+def aae(real_, pred_):
+ AAE = 0
+ sum = 0
+ N = len(real_)
+ for i in range(1, N):
+ sum += (np.abs(real_[i] - pred_[i])) / N
+ AAE = sum
+ return AAE
+aae_hmm = aae(close, hmm_price)
+aae_lstm = aae(close, lstm_predictions)
+aae_rnn = aae(close, rnn_predictions)
+Average Relative Percentage Error (ARPE)
+ARPE is the average of the relative errors, normalized by the total number of predictions, offe
+ring a relative view of error.
+# 3. Average Relative Percentage Error (ARPE)
+def arpe(real_, pred_):
+ sum = 0
+ N = len(real_)
+ for i in range(1, N):
+ sum += (np.abs(real_[i] - pred_[i])) / N
+ ARPE = sum / N
+ return ARPE
+arpe_hmm = arpe(close, hmm_price)
+arpe_lstm = arpe(close, lstm_predictions)
+arpe_rnn = arpe(close, rnn_predictions)
+Root Mean Squared Error (RMSE)
+RMSE measures the square root of the average squared differences between actual and predict
+ed values, giving more weight to larger errors.
+# 4. Root Mean Squared Error (RMSE)
+def rmse(real_, pred_):
+ sum = 0
+ N = len(real_)
+ for i in range(1, N):
+ sum += (np.square(real_[i] - pred_[i])) / N
+ RMSE = np.sqrt(sum)
+ return RMSE
+rmse_hmm = rmse(close, hmm_price)
+rmse_lstm = rmse(close, lstm_predictions)
+rmse_rnn = rmse(close, rnn_predictions)
+ Calculate Efficiency
+Efficiency compares each metric for the LSTM and RNN models relative to the HMM baselin
+e model. The formula used is:
+Efficiency Calculation
+def efficiency(hmm_metric, other_metric):
+ return 1 - (hmm_metric / other_metric)
+eff_lstm = {
+ 'APE': efficiency(ape_hmm, ape_lstm),
+ 'AAE': efficiency(aae_hmm, aae_lstm),
+ 'ARPE': efficiency(arpe_hmm, arpe_lstm),
+ 'RMSE': efficiency(rmse_hmm, rmse_lstm),
+}
+eff_rnn = {
+ 'APE': efficiency(ape_hmm, ape_rnn),
+ 'AAE': efficiency(aae_hmm, aae_rnn),
+ 'ARPE': efficiency(arpe_hmm, arpe_rnn),
+ 'RMSE': efficiency(rmse_hmm, rmse_rnn),
+}
+# Print the results
+print("HMM vs LSTM Efficiency:", eff_lstm)
+print("HMM vs RNN Efficiency:", eff_rnn)
+ Accuracy Score Calculation
+The accuracy score measures the percentage of predictions within a specified threshold. The
+threshold in this code is set to 20% of the average actual price, and the function calculates how
+often each prediction is within this range.
+def accuracy_score(real_, pred_, threshold):
+ correct_predictions = np.sum(np.abs(real_ - pred_) <= threshold)
+ return correct_predictions / len(real_)
+# Define a more lenient threshold (for example, 20% of the actual pr
+ice)
+threshold = 0.20 * np.mean(close) # 20% of the average actual price
+# Calculate accuracy scores for LSTM and RNN
+accuracy_lstm = accuracy_score(close, lstm_predictions, threshold)
+accuracy_rnn = accuracy_score(close, rnn_predictions, threshold)
+# Print the results
+print("LSTM Accuracy Score:", accuracy_lstm)
+print("RNN Accuracy Score:", accuracy_rnn)
+hmm_price = hmm_price[-min_length:]
+print("Actual Prices:", close)
+print("HMM Predictions:", hmm_price)
+accuracy_hmm = accuracy_score(close, hmm_price, threshold)
+print("HMM Accuracy Score:", accuracy_hmm) 
